@@ -204,8 +204,7 @@ class StableDiffusionHordeJob(HordeJobFramework):
             stack_payload = gen_payload
             stack_payload["request_type"] = req_type
             stack_payload["model"] = self.current_model
-            stack_payload["prompt"] = "PROMPT REDACTED"
-
+            stack_payload["prompt"] = self.current_payload["prompt"]
             logger.error(
                 "Something went wrong when processing the the request. "
                 "Please check your trace.log file for the full stack trace. "

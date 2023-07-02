@@ -161,8 +161,9 @@ class WebUI:
             "LoRa requested which you do not have, and cache that for a number a days",
         },
         "max_lora_cache_size": {
-            "label": "Use this setting to control how much extra space LoRas can take after you downloaded the Top",
-            "info": "If a new Lora would exceed this space, an old lora you've downloaded previously will be deleted. "
+            "label": "Lora Cache Size (In gigabytes!) ",
+            "info": "Use this setting to control how much extra space LoRas can take after you downloaded the Top."
+            "If a new Lora would exceed this space, an old lora you've downloaded previously will be deleted. "
             "!Note! THIS IS ON TOP OF THE CURATED LORAs, so plan around +5G more than this",
         },
         "disable_terminal_ui": {
@@ -297,7 +298,7 @@ class WebUI:
         config = self.reload_config()
 
         # Merge values which require some pre-processing
-        skipped_keys = ["models_on_disk"]
+        skipped_keys = ["models_on_disk", "special_models_to_load", "special_top_models_to_load"]
         models_to_load = []
         for key, value in args.items():
             cfgkey = self._cfg(key.label)
@@ -345,33 +346,42 @@ class WebUI:
             "https://raw.githubusercontent.com/Haidra-org/AI-Horde-image-model-reference/main/stable_diffusion.json"
         )
         latest_models = self.download_models(remote_models)
-
+        if not latest_models or not isinstance(latest_models, dict):
+            print("Failed to load models")
+            latest_models = {}
         aiworker_cache_home = os.environ.get("AIWORKER_CACHE_HOME", None)
         model_cache_folder = aiworker_cache_home if aiworker_cache_home else "./"
 
-        sd_models_folder = pathlib.Path(model_cache_folder).joinpath("nataili/compvis/").resolve()
+        sub_folders = ["", "nataili", "models"]
 
-        if sd_models_folder.exists():
-            all_files_in_cache = glob.glob(str(sd_models_folder.joinpath("*.*")))
-            all_files_in_cache = [
-                pathlib.Path(x).name for x in all_files_in_cache if x.endswith((".ckpt", ".safetensors"))
-            ]
-            for model_name, model_info in latest_models.items():
-                model_config_dict: dict = model_info.get("config", None)
-                if not model_config_dict:
-                    continue
-                model_file_config_list: list = model_config_dict.get("files", None)
-                if not model_file_config_list:
-                    continue
-                if len(model_file_config_list) == 0:
-                    continue
-                model_filename: str | None = None
-                for key in model_file_config_list:
-                    model_filename = key.get("path", None)
-                    if model_filename and "yaml" not in model_filename:
-                        break
-                if model_filename and model_filename in all_files_in_cache:
-                    self.models_found_on_disk.append(model_name)
+        sd_models_folders: list[pathlib.Path] = [
+            pathlib.Path(model_cache_folder).joinpath(x).joinpath("compvis") for x in sub_folders
+        ]
+        for sd_models_folder in sd_models_folders:
+            if sd_models_folder.exists():
+                all_files_in_cache = glob.glob(str(sd_models_folder.joinpath("*.*")))
+                all_files_in_cache = [
+                    pathlib.Path(x).name for x in all_files_in_cache if x.endswith((".ckpt", ".safetensors"))
+                ]
+                for model_name, model_info in latest_models.items():
+                    model_config_dict: dict = model_info.get("config", None)
+                    if not model_config_dict:
+                        continue
+                    model_file_config_list: list = model_config_dict.get("files", None)
+                    if not model_file_config_list:
+                        continue
+                    if len(model_file_config_list) == 0:
+                        continue
+                    model_filename: str | None = None
+                    for key in model_file_config_list:
+                        model_filename = key.get("path", None)
+                        if model_filename and "yaml" not in model_filename:
+                            break
+                    if model_filename and model_filename in all_files_in_cache:
+                        if self.models_found_on_disk is None:
+                            self.models_found_on_disk = []
+                        self.models_found_on_disk.append(model_name)
+                break
 
         return sorted(latest_models, key=str.casefold)
 
@@ -554,13 +564,13 @@ class WebUI:
                         value=config.allow_lora,
                         info=self._info("allow_lora"),
                     )
-                    config.default("max_lora_cache_size", False)
+                    config.default("max_lora_cache_size", 10)
                     max_lora_cache_size = gr.Slider(
                         label=self._label("max_lora_cache_size"),
                         value=config.max_lora_cache_size,
                         info=self._info("max_lora_cache_size"),
                         minimum=10,
-                        maximum=8192,
+                        maximum=1024,
                         step=1,
                     )
                     config.default("forms", [])
@@ -886,12 +896,13 @@ class WebUI:
 
         self.app.queue()
 
-    def run(self, share, nobrowser, lan):
+    def run(self, share, nobrowser, lan, user, password):
         server_name = "0.0.0.0" if lan else None
         self.initialise()
         self.app.launch(
             quiet=True,
             share=share,
+            auth=(user, password) if user and password else None,
             inbrowser=not nobrowser,
             server_name=server_name,
             prevent_thread_lock=True,
@@ -906,7 +917,36 @@ if __name__ == "__main__":
     parser.add_argument("--share", action="store_true", help="Create a public URL")
     parser.add_argument("--no-browser", action="store_true", help="Don't open automatically in a web browser")
     parser.add_argument("--lan", action="store_true", help="Allow access on the local network")
+    parser.add_argument("--user", action="store", nargs=1, help="Username for authentication")
+    parser.add_argument("--password", action="store", nargs=1, help="Password for authentication")
+    parser.add_argument("--no-auth", action="store_true", help="Disable authentication")
     args = parser.parse_args()
 
+    if args.share or args.lan:
+        if not args.no_auth and not args.user:
+            print(
+                (
+                    "WARNING: You are running in public mode without authentication. This is not recommended.\n"
+                    "To enable authentication, use the --user and --password arguments.\n"
+                    "If you are running in a trusted environment, you can disable this warning with the "
+                    "--no-auth argument.\n"
+                    "Continue without authentication? (y/n)"
+                ),
+            )
+            if input().lower() != "y":
+                exit(0)
+
+        if (args.user or args.password) and not (args.user and args.password):
+            parser.error("--user and --password must both be specified")
+
+    elif args.user or args.password:
+        parser.error("--user and --password can only be used with --share or --lan")
+
     ui = WebUI()
-    ui.run(args.share, args.no_browser, args.lan)
+    ui.run(
+        args.share,
+        args.no_browser,
+        args.lan,
+        args.user[0] if args.user else None,
+        args.password[0] if args.password else None,
+    )

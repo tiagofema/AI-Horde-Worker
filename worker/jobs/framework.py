@@ -54,7 +54,11 @@ class HordeJobFramework:
 
     def is_faulted(self):
         """Check if the job is faulted"""
-        return self.status in [JobStatus.FAULTED, JobStatus.FINALIZING_FAULTED]
+        return self.status in [JobStatus.FAULTED, JobStatus.FINALIZING_FAULTED, JobStatus.OUT_OF_MEMORY]
+
+    def is_out_of_memory(self):
+        """Check if the job ran out of memory"""
+        return self.status in [JobStatus.OUT_OF_MEMORY]
 
     @logger.catch(reraise=True)
     def start_job(self):
@@ -89,7 +93,7 @@ class HordeJobFramework:
         """Submits the job to the server to earn our kudos.
         This method MUST be extended with the specific logic for this worker
         At the end it MUST set the job state to DONE"""
-        if self.status == JobStatus.FAULTED:
+        if self.status == JobStatus.FAULTED or self.status == JobStatus.OUT_OF_MEMORY:
             self.submit_dict = {
                 "id": self.current_id,
                 "state": "faulted",
@@ -152,13 +156,22 @@ class HordeJobFramework:
                     time.sleep(2)
                     continue
                 reward = submit_req.json()["reward"]
+                time_spent_processing = round(time.time() - self.process_time, 1)
+
                 with contextlib.suppress(ValueError):
-                    reward = f"{float(reward):.1f}"
+                    reward = float(reward)
+                    if time_spent_processing > (reward * 3) and not self.bridge_data.suppress_speed_warnings:
+                        logger.warning(
+                            "This job took longer than average to process."
+                            " Please consider lowering your max_power.",
+                        )
+
                 logger.info(
-                    f"Submitted job with id {self.current_id} and contributed for {reward}. "
+                    f"Submitted job with id {self.current_id} and contributed for {reward:.1f}. "
                     f"Job took {round(time.time() - self.start_time,1)} seconds since queued "
-                    f"and {round(time.time() - self.process_time,1)} since start.",
+                    f"and {time_spent_processing} since start.",
                 )
+
                 self.post_submit_tasks(submit_req)
                 if self.status == JobStatus.FINALIZING_FAULTED:
                     self.status = JobStatus.FAULTED

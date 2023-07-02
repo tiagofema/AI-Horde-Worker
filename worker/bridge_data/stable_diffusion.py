@@ -80,10 +80,12 @@ class StableDiffusionBridgeData(BridgeDataTemplate):
 
         # Check for magic constants and expand them
         top_n = 0
+        all_models = False
         for model in self.models_to_load[:]:
             # all models
             if match := re.match(r"ALL ((\w*) )?MODELS", model, re.IGNORECASE):
                 self.models_to_load = self.get_all_models(match[2])
+                all_models = True
                 break  # can't be more
             if match := re.match(r"TOP (\d+)", model, re.IGNORECASE):
                 self.models_to_load.remove(model)
@@ -91,6 +93,28 @@ class StableDiffusionBridgeData(BridgeDataTemplate):
                     top_n = int(match[1])
         if top_n:
             self.models_to_load.extend(self.get_top_n_models(top_n))
+
+        if self.dynamic_models and not self.number_of_dynamic_models:
+            logger.warning(
+                "Dynamic models are enabled but config option `number_of_dynamic_models` isn't set or is 0. "
+                "Disabling dynamic models.",
+            )
+            self.dynamic_models = False
+
+        if self.dynamic_models and (all_models or top_n > self.number_of_dynamic_models):
+            logger.warning(
+                f"Dynamic models is configured to load {self.number_of_dynamic_models} models, but "
+                f"{top_n if top_n else 'All Models'} models "
+                f"are manually configured to be loaded. Disabling dynamic models.",
+            )
+
+            logger.warning(
+                "If you want to keep dynamic models enabled, remove the manual model configuration "
+                " ('models_to_load') or set `number_of_dynamic_models` to a value higher than the number "
+                "of manual models loaded. ",
+            )
+            self.dynamic_models = False
+            self.number_of_dynamic_models = 0
 
         if not self.dynamic_models:
             self.model_names = self.models_to_load
@@ -125,7 +149,7 @@ class StableDiffusionBridgeData(BridgeDataTemplate):
         self.model_names.insert(0, "safety_checker")
         self.model_names.insert(0, "ViT-L/14")
         if self.allow_post_processing:
-            self.model_names += list(POST_PROCESSORS_HORDELIB_MODELS)
+            self.model_names = list(POST_PROCESSORS_HORDELIB_MODELS) + self.model_names
         if (not self.initialized and not self.models_reloading) or previous_url != self.horde_url:
             logger.init(
                 (
@@ -141,7 +165,7 @@ class StableDiffusionBridgeData(BridgeDataTemplate):
         UserSettings.disable_disk_cache.active = self.disable_disk_cache
 
     def check_extra_conditions_for_download_choice(self):
-        return self.dynamic_models or self.always_download
+        return (self.dynamic_models and self.number_of_dynamic_models) or self.always_download
 
     def _is_valid_stable_diffusion_model(self, model_name):
         if model_name in ["safety_checker", "LDSR"]:
@@ -180,9 +204,18 @@ class StableDiffusionBridgeData(BridgeDataTemplate):
             return self._all_model_names[:]
 
         logger.info("Refreshing the list of all available models")
-        data = requests.get(
-            "https://raw.githubusercontent.com/Haidra-Org/AI-Horde-image-model-reference/main/stable_diffusion.json",
-        ).json()
+        response = None
+        try:
+            response = requests.get(
+                url="https://raw.githubusercontent.com/Haidra-Org/AI-Horde-image-model-reference/main/stable_diffusion.json",
+                timeout=10,
+            )
+            response.raise_for_status()
+        except (requests.exceptions.RequestException, requests.exceptions.HTTPError) as e:
+            logger.error(f"Failed to retrieve the list of all available models: {e}")
+            return self.models_to_load if self.models_to_load else []
+
+        data = response.json()
 
         # Get all interesting models
         models = []
@@ -264,6 +297,8 @@ class StableDiffusionBridgeData(BridgeDataTemplate):
             return
         super().check_models(model_manager)
         if not self.allow_lora:
+            return
+        if model_manager.lora is None:  # The lora manager is not loaded yet
             return
         if not model_manager.lora.are_downloads_complete():
             return

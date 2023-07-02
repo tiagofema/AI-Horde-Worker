@@ -15,11 +15,14 @@ class WorkerFramework:
         self.running_jobs = []
         self.waiting_jobs = []
         self.run_count = 0
+        self.pilot_job_was_run = False
         self.last_config_reload = 0
         self.should_stop = False
         self.should_restart = False
         self.consecutive_executor_restarts = 0
         self.consecutive_failed_jobs = 0
+        self.out_of_memory_jobs = 0
+        self.soft_restarts = 0
         self.executor = None
         self.ui = None
         self.last_stats_time = time.time()
@@ -43,18 +46,28 @@ class WorkerFramework:
                 self.ui = threading.Thread(target=ui.run, daemon=True)
                 self.ui.start()
 
+    def on_restart(self):
+        """Called when the worker loop is restarted. Make sure to invoke super().on_restart() when overriding."""
+        self.soft_restarts += 1
+
     @logger.catch(reraise=True)
     def start(self):
         self.reload_data()
         self.exit_rc = 1
 
+        self.consecutive_failed_jobs = 0  # Moved out of the loop to capture failure across soft-restarts
+
         while True:  # This is just to allow it to loop through this and handle shutdowns correctly
-            self.should_restart = False
-            self.consecutive_failed_jobs = 0
+            if self.should_restart:
+                self.should_restart = False
+                self.on_restart()
+                self.run_count = 0
+
             with ThreadPoolExecutor(max_workers=self.bridge_data.max_threads) as self.executor:
                 while not self.should_stop:
                     if self.should_restart:
                         self.executor.shutdown(wait=False)
+                        self.should_restart = True
                         break
                     try:
                         if self.ui and not self.ui.is_alive():
@@ -65,7 +78,10 @@ class WorkerFramework:
                         self.should_stop = True
                         self.exit_rc = 0
                         break
-                if self.should_stop:
+                if self.should_stop or self.soft_restarts > 15:
+                    if self.soft_restarts > 15:
+                        logger.error("Too many soft restarts, exiting the worker. Please review your config.")
+                        logger.error("You can try asking for help in the official discord if this persists.")
                     logger.init("Worker", status="Shutting Down")
                     sys.exit(self.exit_rc)
 
@@ -152,6 +168,13 @@ class WorkerFramework:
                 if job_thread.exception(timeout=1):
                     logger.error("Job failed with exception, {}", job_thread.exception())
                     logger.exception(job_thread.exception())
+                if job.is_out_of_memory():
+                    logger.error("Job failed with out of memory error")
+                    self.out_of_memory_jobs += 1
+                if self.out_of_memory_jobs >= 10:
+                    logger.critical("Too many jobs have failed with out of memory error. Aborting!")
+                    self.should_stop = True
+                    return
                 if self.consecutive_executor_restarts > 0:
                     logger.critical(
                         "Worker keeps crashing after thread executor restart. " "Cannot be salvaged. Aborting!",

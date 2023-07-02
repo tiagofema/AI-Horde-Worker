@@ -8,7 +8,6 @@ import traceback
 from io import BytesIO
 
 import requests
-from PIL import Image
 from hordelib.horde import HordeLib
 from hordelib.safety_checker import is_image_nsfw
 
@@ -22,7 +21,6 @@ from worker.stats import bridge_stats
 
 SAVE_KUDOS_TRAINING_DATA = False
 SIMULATE_KUDOS_LOCALLY = False
-
 
 
 class StableDiffusionHordeJob(HordeJobFramework):
@@ -97,10 +95,10 @@ class StableDiffusionHordeJob(HordeJobFramework):
             censor_reason = "Requested"
         # use_gfpgan = self.current_payload.get("use_gfpgan", True)
         # use_real_esrgan = self.current_payload.get("use_real_esrgan", False)
-        self.source_processing = self.pop.get("source_processing")
-        self.source_image = self.pop.get("source_image")
-        self.source_mask = self.pop.get("source_mask")
-        self.model_baseline = self.model_manager.models[self.current_model].get("baseline")
+        source_processing = self.pop.get("source_processing")
+        source_image = self.pop.get("source_image")
+        source_mask = self.pop.get("source_mask")
+        model_baseline = self.model_manager.models[self.current_model].get("baseline")
         # These params will always exist in the payload from the horde
         try:
             gen_payload = {
@@ -117,19 +115,19 @@ class StableDiffusionHordeJob(HordeJobFramework):
                 "n_iter": 1,
             }
             # These params might not always exist in the horde payload
-            if self.source_image:
-                gen_payload["source_image"] = self.source_image
-            if self.source_image and self.source_mask:
-                gen_payload["source_mask"] = self.source_mask
-            if "denoising_strength" in self.current_payload and self.source_image:
+            if source_image:
+                gen_payload["source_image"] = source_image
+            if source_image and source_mask:
+                gen_payload["source_mask"] = source_mask
+            if "denoising_strength" in self.current_payload and source_image:
                 gen_payload["denoising_strength"] = self.current_payload["denoising_strength"]
-            if "hires_fix" in self.current_payload and not self.source_image:
+            if "hires_fix" in self.current_payload and not source_image:
                 gen_payload["hires_fix"] = self.current_payload["hires_fix"]
             if (
                 "control_type" in self.current_payload
-                and self.source_image
-                and self.source_processing == "img2img"
-                and "stable diffusion 2" not in self.model_baseline
+                and source_image
+                and source_processing == "img2img"
+                and "stable diffusion 2" not in model_baseline
             ):
                 gen_payload["control_type"] = self.current_payload["control_type"]
                 gen_payload["image_is_control"] = self.current_payload["image_is_control"]
@@ -143,10 +141,10 @@ class StableDiffusionHordeJob(HordeJobFramework):
             return
         # logger.debug(gen_payload)
         req_type = "txt2img"
-        if self.source_image:
-            if self.source_processing == "img2img":
+        if source_image:
+            if source_processing == "img2img":
                 req_type = "img2img"
-            elif self.source_processing == "inpainting":
+            elif source_processing == "inpainting":
                 req_type = "inpainting"
         # Reject jobs for pix2pix if not img2img
         if self.current_model in ["pix2pix"] and req_type != "img2img":
@@ -160,11 +158,11 @@ class StableDiffusionHordeJob(HordeJobFramework):
         logger.debug(
             f"{req_type} ({self.current_model}) request with id {self.current_id} picked up. Initiating work...",
         )
-        if req_type == "inpainting" and self.source_mask is None:
+        if req_type == "inpainting" and source_mask is None:
             try:
-                if self.source_image.mode == "P":
-                    self.source_image.convert("RGBA")
-                _red, _green, _blue, _alpha = self.source_image.split()
+                if source_image.mode == "P":
+                    source_image.convert("RGBA")
+                _red, _green, _blue, _alpha = source_image.split()
             except ValueError:
                 logger.warning(
                     (
@@ -182,8 +180,7 @@ class StableDiffusionHordeJob(HordeJobFramework):
                 f"{self.current_payload.get('sampler_name','unknown sampler')}. "
                 f"Prompt length is {len(self.current_payload['prompt'])} characters "
                 f"And it appears to contain {len(gen_payload.get('loras', []))} "
-                f"loras: {[lora['name'] for lora in gen_payload.get('loras', [])]}"
-                f"\nThe Prompt is: {self.current_payload['prompt']}\n",
+                f"loras: {[lora['name'] for lora in gen_payload.get('loras', [])]}",
             )
             time_state = time.time()
             gen_payload["model"] = self.current_model
@@ -199,31 +196,19 @@ class StableDiffusionHordeJob(HordeJobFramework):
                 f"Generation for id {self.current_id} finished successfully"
                 f" in {round(time.time() - time_state,1)} seconds.",
             )
-            # Save entry data and generated result
         except Exception as err:
             stack_payload = gen_payload
             stack_payload["request_type"] = req_type
             stack_payload["model"] = self.current_model
-            stack_payload["prompt"] = self.current_payload["prompt"]
+            stack_payload["prompt"] = "PROMPT REDACTED"
+
             logger.error(
-                "Something went wrong when processing the the request. "
+                "Something went wrong when processing the request. "
                 "Please check your trace.log file for the full stack trace. "
                 f"Payload: {stack_payload}",
             )
             trace = "".join(traceback.format_exception(type(err), err, err.__traceback__))
             logger.trace(trace)
-            if "OutOfMemoryError" in str(err):
-                logger.error(
-                    "This machine ran out of memory when processing the request. "
-                    "You very likely need to reduce the max_power parameter in your config."
-                    "\nKeep in mind that you may run fine for long periods of time until a worst case job is run.",
-                    "\nHowever, If you are only seeing this error after very long periods of time, and you know "
-                    "you have enough memory ordinarily for a worst case job, it is possible that there may be a "
-                    "memory leak. In that case, report this issue, along with your bridge.log, to the developers.",
-                )
-                self.status = JobStatus.OUT_OF_MEMORY
-            else:
-                self.status = JobStatus.FAULTED
             if "OutOfMemoryError" in str(err):
                 logger.error(
                     "This machine ran out of memory when processing the request. "

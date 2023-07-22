@@ -48,6 +48,8 @@ class ScribeHordeJob(HordeJobFramework):
                 f"Starting generation for id {self.current_id}: {self.current_model} @ "
                 f"{self.current_payload['max_length']}:{self.current_payload['max_context_length']} "
                 f"Prompt length is {len(self.current_payload['prompt'])} characters",
+                f"\nAnd the prompt is: {self.current_payload['prompt']}...",
+
             )
             time_state = time.time()
             if self.requested_softprompt != self.bridge_data.current_softprompt:

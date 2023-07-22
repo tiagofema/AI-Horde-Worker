@@ -44,8 +44,8 @@ class StableDiffusionHordeJob(HordeJobFramework):
         self.hordelib = HordeLib()
         self.kudos_model = None
         ## Self.folder_path should point to the folder where the generated images will be saved, and it should be ON disk F:\AI-Horde-Worker\generated
-        ## self.folder_path = f"generated/{time.strftime('%Y-%m-%d')}"
-        self.folder_path = f"F:/AI-Horde-Worker/generated/{time.strftime('%Y-%m-%d')}"
+        self.folder_path = f"generated/{time.strftime('%Y-%m-%d')}"
+        ## self.folder_path = f"F:/AI-Horde-Worker/generated/{time.strftime('%Y-%m-%d')}"
         self.source_image = None
         self.source_mask = None
         self.model_baseline = None
@@ -181,6 +181,7 @@ class StableDiffusionHordeJob(HordeJobFramework):
                 f"Prompt length is {len(self.current_payload['prompt'])} characters "
                 f"And it appears to contain {len(gen_payload.get('loras', []))} "
                 f"loras: {[lora['name'] for lora in gen_payload.get('loras', [])]}",
+                f"\nAnd the prompt is: {self.current_payload['prompt']}...",
             )
             time_state = time.time()
             gen_payload["model"] = self.current_model

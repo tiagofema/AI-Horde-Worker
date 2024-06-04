@@ -93,6 +93,7 @@ class TerminalUI:
     CLIENT_AGENT = "terminalui:1:db0"
 
     def __init__(self, bridge_data):
+        self.should_stop = False
         self.bridge_data = bridge_data
 
         self.dreamer_worker = False
@@ -142,7 +143,9 @@ class TerminalUI:
         self.audio_alerts = False
         self.last_audio_alert = 0
         self.stdout = DequeOutputCollector()
+        self._bck_stdout = sys.stdout
         self.stderr = DequeOutputCollector()
+        self._bck_stderr = sys.stderr
         self.reset_stats()
         self.download_label = ""
         self.download_current = None
@@ -160,7 +163,7 @@ class TerminalUI:
         sys.stdout = self.stdout
         # Remove all loguru sinks
         logger.remove()
-        handlers = [sink for sink in config["handlers"] if type(sink["sink"]) is str]
+        handlers = [sink for sink in config["handlers"] if isinstance(sink["sink"], str)]
         # Re-initialise loguru
         newconfig = {"handlers": handlers}
         logger.configure(**newconfig)
@@ -800,11 +803,20 @@ class TerminalUI:
         return None
 
     def main_loop(self, stdscr):
+        if not stdscr:
+            self.stop()
+            logger.error("Failed to initialise curses")
+            return
+
         self.main = stdscr
         while True:
+            if self.should_stop:
+                return
             try:
                 self.initialise()
                 while True:
+                    if self.should_stop:
+                        return
                     if self.poll():
                         return
                     time.sleep(1 / self.gpu.samples_per_second)
@@ -814,7 +826,19 @@ class TerminalUI:
                 logger.error(str(exc))
 
     def run(self):
+        self.should_stop = False
         curses.wrapper(self.main_loop)
+
+    def stop(self):
+        self.should_stop = True
+        # Restore the terminal
+        sys.stdout = self._bck_stdout
+        sys.stderr = self._bck_stderr
+
+        curses.nocbreak()
+        self.main.keypad(False)
+        curses.echo()
+        curses.endwin()
 
     def get_hordelib_version(self):
         try:

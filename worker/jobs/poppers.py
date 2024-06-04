@@ -36,7 +36,7 @@ class JobPopper:
                 timeout=40,
             )
             # logger.debug(self.pop_payload)
-            node = pop_req.headers["horde-node"] if "horde-node" in pop_req.headers else "unknown"
+            node = pop_req.headers.get("horde-node", "unknown")
             logger.debug(f"Job pop took {pop_req.elapsed.total_seconds()} (node: {node})")
             bridge_stats.update_pop_stats(node, pop_req.elapsed.total_seconds())
         except requests.exceptions.ConnectionError:
@@ -218,6 +218,7 @@ class ScribePopper(JobPopper):
             "priority_usernames": self.bridge_data.priority_usernames,
             "softprompts": self.bridge_data.softprompts[self.bridge_data.model],
             "bridge_agent": self.BRIDGE_AGENT,
+            "threads": self.bridge_data.max_threads,
         }
 
     def horde_pop(self):

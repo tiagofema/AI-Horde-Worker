@@ -17,6 +17,7 @@ class WorkerFramework:
         self.run_count = 0
         self.pilot_job_was_run = False
         self.last_config_reload = 0
+        self.is_daemon = False
         self.should_stop = False
         self.should_restart = False
         self.consecutive_executor_restarts = 0
@@ -25,6 +26,7 @@ class WorkerFramework:
         self.soft_restarts = 0
         self.executor = None
         self.ui = None
+        self.ui_class = None
         self.last_stats_time = time.time()
         logger.stats("Starting new stats session")
         # These two should be filled in by the extending classes
@@ -35,20 +37,31 @@ class WorkerFramework:
     def startup_terminal_ui(self):
         # Setup UI if requested
         in_notebook = hasattr(__builtins__, "__IPYTHON__")
-        if not in_notebook and not self.bridge_data.disable_terminal_ui:
-            # Don't allow this if auto-downloading is not enabled as how will the user see download prompts?
-            if hasattr(self.bridge_data, "always_download") and not self.bridge_data.always_download:
-                logger.warning("Terminal UI can not be enabled without also enabling 'always_download'")
-            else:
-                from worker.ui import TerminalUI
+        if in_notebook:
+            return
 
-                ui = TerminalUI(self.bridge_data)
-                self.ui = threading.Thread(target=ui.run, daemon=True)
-                self.ui.start()
+        if self.bridge_data.disable_terminal_ui:
+            return
+
+        # Don't allow this if auto-downloading is not enabled as how will the user see download prompts?
+        if hasattr(self.bridge_data, "always_download") and not self.bridge_data.always_download:
+            logger.warning("Terminal UI can not be enabled without also enabling 'always_download'")
+        else:
+            from worker.ui import TerminalUI
+
+            self.ui_class = TerminalUI(self.bridge_data)
+            self.ui = threading.Thread(target=self.ui_class.run, daemon=True)
+            self.ui.start()
 
     def on_restart(self):
         """Called when the worker loop is restarted. Make sure to invoke super().on_restart() when overriding."""
         self.soft_restarts += 1
+
+    @logger.catch(reraise=True)
+    def stop(self):
+        self.should_stop = True
+        self.ui_class.stop()
+        logger.info("Stop methods called")
 
     @logger.catch(reraise=True)
     def start(self):
@@ -83,7 +96,10 @@ class WorkerFramework:
                         logger.error("Too many soft restarts, exiting the worker. Please review your config.")
                         logger.error("You can try asking for help in the official discord if this persists.")
                     logger.init("Worker", status="Shutting Down")
-                    sys.exit(self.exit_rc)
+                    if self.is_daemon:
+                        return
+                    else:  # noqa: RET505
+                        sys.exit(self.exit_rc)
 
     def process_jobs(self):
         # logger.debug("Cron: Starting process_jobs()")
@@ -147,6 +163,8 @@ class WorkerFramework:
         if self.bridge_data.queue_size == 0:
             if jobs := self.pop_job():
                 job = jobs[0]
+            if self.should_stop:
+                return False
         elif len(self.waiting_jobs) > 0:
             job = self.waiting_jobs.pop(0)
         else:
@@ -229,7 +247,9 @@ class WorkerFramework:
 
     def reload_data(self):
         """This is just a utility function to reload the configuration"""
-        self.bridge_data.reload_data()
+        # Daemons are fed the configuration externally
+        if not self.is_daemon:
+            self.bridge_data.reload_data()
 
     def reload_bridge_data(self):
         self.reload_data()
